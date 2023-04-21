@@ -1,0 +1,80 @@
+package main
+
+import (
+	"crypto/tls"
+	"log"
+	"net/http"
+	"net/rpc"
+	"time"
+)
+
+var (
+	oldCer = "/Users/utkarshbisht/block8/projects/auto-renew-certs/certs/localhost/cert.pem"
+	oldKey = "/Users/utkarshbisht/block8/projects/auto-renew-certs/certs/localhost/privkey.pem"
+	cer = "/Users/utkarshbisht/block8/projects/auto-renew-certs/certs/preethd.local/cert.pem"
+	key = "/Users/utkarshbisht/block8/projects/auto-renew-certs/certs/preethd.local/privkey.pem"
+)
+
+
+type MyRPC struct{}
+
+func (t *MyRPC) SayHello(name string, reply *string) error {
+	*reply = "Hello, " + name
+	return nil
+}
+
+func main() {
+	// Load the initial SSL certificate and private key
+	cert, err := tls.LoadX509KeyPair(oldCer, oldKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create the initial TLS configuration object
+	tlsConfig := &tls.Config{
+		GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return &cert, nil
+		},
+	}
+
+	// Create the HTTP server with the RPC service
+	rpcServer := rpc.NewServer()
+	rpcServer.Register(&MyRPC{})
+	http.Handle(rpc.DefaultRPCPath, rpcServer)
+
+	// Start the server with the initial TLS configuration
+	listener, err := tls.Listen("tcp", ":8080", tlsConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Start a goroutine to update the SSL certificate periodically
+	go func() {
+		for {
+			// Wait for 1 minute before updating the SSL certificate
+			time.Sleep(1 * time.Minute)
+
+			// Load the new SSL certificate and private key
+			newCert, err := tls.LoadX509KeyPair(cer, key)
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+
+			// Update the TLS configuration with the new certificate
+			tlsConfig.GetCertificate = func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				return &newCert, nil
+			}
+		}
+	}()
+
+	// Handle incoming connections
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		go http.ServeRPC(rpcServer, conn)
+	}
+}

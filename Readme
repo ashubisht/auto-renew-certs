@@ -1,0 +1,12 @@
+#Server
+Host the https server on port 
+CMD: go run server/server.go
+
+#Client
+Communicate with the server and prints the details of the certificate
+CMD: go run client/client.go
+
+#configuration for certificate
+Please update the domain name in the certs/conf/requirement.conf file
+
+#certificate will be automatically create in certs folder under the provided domain in the command

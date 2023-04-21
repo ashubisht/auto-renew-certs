@@ -1,0 +1,108 @@
+package main
+
+import (
+	"crypto/tls"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+var (
+	// email         = "paramjot.saini@block8.com"
+	certDir       = "/Users/utkarshbisht/block8/projects/auto-renew-certs/certs/"
+	config        = "/Users/utkarshbisht/block8/projects/auto-renew-certs/certs/conf/requirement.conf"
+	useSelfSigned = flag.Bool("self-signed", false, "use self-signed certificate")
+	domain        = flag.String("domain", "", "Domain Name")
+)
+
+func main() {
+	flag.Parse()
+	if *domain == "" {
+		fmt.Printf("--domain flag is required")
+		os.Exit(1)
+	}
+	certPath := filepath.Join(certDir, *domain)
+	if _, err := os.Stat(certPath); os.IsNotExist(err) {
+		// Create the folder if it doesn't exist
+		err := os.Mkdir(certPath, 0755) // 0755 is the permission mode
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+
+	var (
+		certFile string
+		keyFile  string
+	)
+
+	if *useSelfSigned {
+		// Generate self-signed certificate
+		log.Println("Generating self-signed certificate...")
+		if err := generateSelfSignedCert(certPath, config); err != nil {
+			log.Fatalf("Error generating self-signed certificate: %v", err)
+		}
+		certFile = filepath.Join(certPath, "cert.pem")
+		keyFile = filepath.Join(certPath, "privkey.pem")
+	} else {
+		// Renew Let's Encrypt certificate
+		log.Println("Renewing Let's Encrypt certificate...")
+		if err := renewCert(); err != nil {
+			log.Fatalf("Error renewing certificate: %v", err)
+		}
+		certFile = filepath.Join(certPath, "fullchain.pem")
+		keyFile = filepath.Join(certPath, "privkey.pem")
+	}
+
+	// Create HTTPS server with updated certificate
+	config := &tls.Config{}
+	config.Certificates = make([]tls.Certificate, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		for {
+			log.Printf("Loading certificate from %s...", certFile)
+			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+			if err != nil {
+				log.Fatalf("Error loading certificate: %v", err)
+			}
+			config.Certificates[0] = cert
+			time.Sleep(15 * time.Second)
+		}
+	}()
+	server := &http.Server{
+		Addr:      ":443",
+		TLSConfig: config,
+	}
+	log.Println("Starting HTTPS server...")
+	if err := server.ListenAndServeTLS("", ""); err != nil {
+		log.Fatalf("Error starting server: %v", err)
+	}
+	wg.Wait()
+}
+
+func renewCert() error {
+	cmd := exec.Command("/bin/bash", "-c", "certbot renew --non-interactive")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("error renewing certificate: %v", err)
+	}
+	return nil
+}
+
+func generateSelfSignedCert(certPath string, config string) error {
+	cmd := exec.Command("/bin/bash", "-c", fmt.Sprintf("openssl req -x509 -nodes -days 365 -newkey rsa:4096 -sha256 -keyout %s/privkey.pem -out %s/cert.pem -config %s -extensions 'v3_req'", certPath, certPath, config))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("error generating self-signed certificate: %v", err)
+	}
+	return nil
+}
